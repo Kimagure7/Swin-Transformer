@@ -10,7 +10,8 @@ from .swin_transformer_v2 import SwinTransformerV2
 from .swin_transformer_moe import SwinTransformerMoE
 from .swin_mlp import SwinMLP
 from .simmim import build_simmim
-
+from PIL import ImageFile
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 def build_model(config, is_pretrain=False):
     model_type = config.MODEL.TYPE
