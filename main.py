@@ -177,7 +177,15 @@ def train_one_epoch(config, model, criterion, data_loader, optimizer, epoch, mix
 
     start = time.time()
     end = time.time()
-    for idx, (samples, targets) in enumerate(data_loader):
+    data_enum = enumerate(data_loader)
+    #for idx, (samples, targets) in enumerate(data_loader):
+    while True:
+        try:
+            idx, (samples, targets) = next(data_enum)
+        except StopIteration:
+            break
+        except:
+            continue
         samples = samples.cuda(non_blocking=True)
         targets = targets.cuda(non_blocking=True)
 

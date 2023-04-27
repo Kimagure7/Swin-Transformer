@@ -156,13 +156,13 @@ class WindowAttention(nn.Module):
         # 公共变量
         logit_scale = torch.clamp(self.logit_scale, max=torch.log(torch.tensor(1. / 0.01))).exp()
         
-        relative_position_bias_table = self.cpb_mlp(self.relative_coords_table).view(-1, self.num_heads).permute(1,0).contiguous()
+        relative_position_bias_table = self.cpb_mlp(self.relative_coords_table).view(self.num_heads,-1)
         # nh, (2wh-1)*(2ww-1)
         x_list = []# 储存多头的结果，然后拼接起来
         for i in range(self.num_heads):
             # cosine attention
             attn = (F.normalize(q[i], dim=-1) @ F.normalize(k[i], dim=-1).transpose(-2, -1))
-            attn = attn * logit_scale # nw*b, Wh*Ww, Wh*Ww
+            attn = attn * logit_scale[i] # nw*b, Wh*Ww, Wh*Ww
             relative_position_bias = relative_position_bias_table[i][self.relative_position_index.view(-1)].view(
                 self.window_size[0] * self.window_size[1], self.window_size[0] * self.window_size[1], -1)  # Wh*Ww,Wh*Ww,1
             relative_position_bias = relative_position_bias.permute(2, 0, 1).contiguous()  # 1, Wh*Ww, Wh*Ww
@@ -181,7 +181,7 @@ class WindowAttention(nn.Module):
 
             attn = self.attn_drop(attn)
 
-            x = (attn @ v[i]).transpose(1, 2).reshape(B_ // self.num_heads, N, C)
+            x = (attn @ v[i]).reshape(B_, N, C)
             x = self.proj(x)
             x = self.proj_drop(x)
             x_list.append(x)
