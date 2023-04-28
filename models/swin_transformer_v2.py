@@ -156,7 +156,7 @@ class WindowAttention(nn.Module):
         # 公共变量
         logit_scale = torch.clamp(self.logit_scale, max=torch.log(torch.tensor(1. / 0.01))).exp()
         
-        relative_position_bias_table = self.cpb_mlp(self.relative_coords_table).view(self.num_heads,-1)
+        relative_position_bias_table = self.cpb_mlp(self.relative_coords_table).view(-1,self.num_heads).permute(1,0).contiguous()
         # nh, (2wh-1)*(2ww-1)
         x_list = []# 储存多头的结果，然后拼接起来
         for i in range(self.num_heads):
@@ -178,14 +178,14 @@ class WindowAttention(nn.Module):
                 attn = self.softmax(attn)
             else:
                 attn = self.softmax(attn)
-
             attn = self.attn_drop(attn)
 
-            x = (attn @ v[i]).reshape(B_, N, C)
-            x = self.proj(x)
-            x = self.proj_drop(x)
+            x = (attn @ v[i]) # nw*b,Wh*Ww,dim
+            # 序列化之前是nw*b, numhead,wh*ww,dim,直接reshape可能无法整除，不如叠起来再说
             x_list.append(x)
-        x_list = torch.stack(x_list).flatten(0,1)
+        x_list = torch.stack(x_list,dim=1).transpose(0,1).reshape(B_, N, C)#nh,nwb,wh*ww,dim-> B_,N,C
+        x_list = self.proj(x_list)
+        x_list = self.proj_drop(x_list)
         return x_list
 
     def extra_repr(self) -> str:
