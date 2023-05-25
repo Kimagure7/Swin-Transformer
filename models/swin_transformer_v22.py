@@ -99,7 +99,7 @@ class WindowAttention(nn.Module):
         relative_coords_w = torch.arange(-(self.window_size[1] - 1), self.window_size[1], dtype=torch.float32)
         relative_coords_table = torch.stack(
             torch.meshgrid([relative_coords_h,
-                            relative_coords_w])).permute(1, 2, 0).contiguous().unsqueeze(0)  # 1, 2*Wh-1, 2*Ww-1, 2
+                            relative_coords_w]),indexing = 'ij').permute(1, 2, 0).contiguous().unsqueeze(0)  # 1, 2*Wh-1, 2*Ww-1, 2
         if pretrained_window_size[0] > 0:
             relative_coords_table[:, :, :, 0] /= (pretrained_window_size[0] - 1)
             relative_coords_table[:, :, :, 1] /= (pretrained_window_size[1] - 1)
@@ -153,6 +153,7 @@ class WindowAttention(nn.Module):
         logit_scale = torch.clamp(self.logit_scale, max=torch.log(torch.tensor(1. / 0.01))).exp()
         relative_position_bias_table = self.cpb_mlp(self.relative_coords_table).view(-1,self.num_heads).permute(1,0).contiguous()
         # nh, (2wh-1)*(2ww-1)
+        x_list = []# 储存多头的结果，然后拼接起来
         x_new = torch.zeros([self.num_heads,B_,N,C//self.num_heads]).cuda()
         for i in range(self.num_heads):
             qkv_index = self.gen(C // self.num_heads,i)
@@ -178,6 +179,8 @@ class WindowAttention(nn.Module):
             else:
                 attn = self.softmax(attn)
             attn = self.attn_drop(attn)
+            
+            
             x_new[i] = attn @ v
         x_new = x_new.permute(1,2,0,3).reshape(B_, N, C)#nh,nwb,wh*ww,dim-> B_,N,C
         x_new = self.proj(x_new)

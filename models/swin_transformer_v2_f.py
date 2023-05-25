@@ -143,46 +143,40 @@ class WindowAttention(nn.Module):
             x: input features with shape of (num_windows*B, N, C)
             mask: (0/-inf) mask with shape of (num_windows, Wh*Ww, Wh*Ww) or None
         """
-        """思路, qkv拆开算,把numberhead提出来"""
-        """将qkv变成合适的形状"""
         B_, N, C = x.shape
-        x_temp = x
         qkv_bias = None
         if self.q_bias is not None:
-            qkv_bias = torch.cat((self.q_bias, torch.zeros_like(self.v_bias, requires_grad=False), self.v_bias))    
-        logit_scale = torch.clamp(self.logit_scale, max=torch.log(torch.tensor(1. / 0.01))).exp()
-        relative_position_bias_table = self.cpb_mlp(self.relative_coords_table).view(-1,self.num_heads).permute(1,0).contiguous()
-        # nh, (2wh-1)*(2ww-1)
-        x_new = torch.zeros([self.num_heads,B_,N,C//self.num_heads]).cuda()
-        for i in range(self.num_heads):
-            qkv_index = self.gen(C // self.num_heads,i)
-            qkv = F.linear(input=x_temp, weight=self.qkv.weight[qkv_index], bias=qkv_bias[qkv_index])# nw*b,N,3*c//nh
-            qkv = qkv.reshape(B_, N, 3, -1).permute(2, 0, 1, 3)# numberhead已经不被包含
-            q, k, v = qkv[0], qkv[1], qkv[2]  # make torchscript happy (cannot use tensor as tuple)
-            # cosine attention
-            attn = (F.normalize(q, dim=-1) @ F.normalize(k, dim=-1).transpose(-2, -1))
-            attn = attn * logit_scale[i] # nw*b, Wh*Ww, Wh*Ww
-            relative_position_bias = relative_position_bias_table[i][self.relative_position_index.view(-1)].view(
-                self.window_size[0] * self.window_size[1], self.window_size[0] * self.window_size[1], -1)  # Wh*Ww,Wh*Ww,1
-            relative_position_bias = relative_position_bias.permute(2, 0, 1).contiguous()  # 1, Wh*Ww, Wh*Ww
-            relative_position_bias = 16 * torch.sigmoid(relative_position_bias)
-            attn = attn + relative_position_bias
+            qkv_bias = torch.cat((self.q_bias, torch.zeros_like(self.v_bias, requires_grad=False), self.v_bias))
+        qkv = F.linear(input=x, weight=self.qkv.weight, bias=qkv_bias)
+        qkv = qkv.reshape(B_, N, 3, self.num_heads, -1).permute(2, 0, 3, 1, 4)
+        q, k, v = qkv[0], qkv[1], qkv[2]  # make torchscript happy (cannot use tensor as tuple)
 
-            if mask is not None:
-                # mask (num_windows, WhWw, WhWw)
-                nW = mask.shape[0]
-                # attn -> B, nw, N, N
-                attn = attn.view(B_ // nW, nW, N, N) + mask.unsqueeze(0)
-                attn = attn.view(-1, N, N)
-                attn = self.softmax(attn)
-            else:
-                attn = self.softmax(attn)
-            attn = self.attn_drop(attn)
-            x_new[i] = attn @ v
-        x_new = x_new.permute(1,2,0,3).reshape(B_, N, C)#nh,nwb,wh*ww,dim-> B_,N,C
-        x_new = self.proj(x_new)
-        x_new = self.proj_drop(x_new)
-        return x_new
+        # cosine attention
+        attn = (F.normalize(q, dim=-1) @ F.normalize(k, dim=-1).transpose(-2, -1))
+        logit_scale = torch.clamp(self.logit_scale, max=torch.log(torch.tensor(1. / 0.01))).exp()
+        attn = attn * logit_scale
+
+        relative_position_bias_table = self.cpb_mlp(self.relative_coords_table).view(-1, self.num_heads)
+        relative_position_bias = relative_position_bias_table[self.relative_position_index.view(-1)].view(
+            self.window_size[0] * self.window_size[1], self.window_size[0] * self.window_size[1], -1)  # Wh*Ww,Wh*Ww,nH
+        relative_position_bias = relative_position_bias.permute(2, 0, 1).contiguous()  # nH, Wh*Ww, Wh*Ww
+        relative_position_bias = 16 * torch.sigmoid(relative_position_bias)
+        attn = attn + relative_position_bias.unsqueeze(0)
+
+        if mask is not None:
+            nW = mask.shape[0]
+            attn = attn.view(B_ // nW, nW, self.num_heads, N, N) + mask.unsqueeze(1).unsqueeze(0)
+            attn = attn.view(-1, self.num_heads, N, N)
+            attn = self.softmax(attn)
+        else:
+            attn = self.softmax(attn)
+
+        attn = self.attn_drop(attn)
+
+        x = (attn @ v).transpose(1, 2).reshape(B_, N, C)
+        x = self.proj(x)
+        x = self.proj_drop(x)
+        return x
 
     def extra_repr(self) -> str:
         return f'dim={self.dim}, window_size={self.window_size}, ' \
@@ -201,12 +195,6 @@ class WindowAttention(nn.Module):
         flops += N * self.dim * self.dim
         return flops
 
-    def gen(self,length,offset):
-    # 获得qkv每次迭代的索引
-        ans = []
-        for j in range(3):
-            ans = ans + [(i + j*self.dim + offset*length) for i in range(length)]
-        return ans
 
 class SwinTransformerBlock(nn.Module):
     r""" Swin Transformer Block.
