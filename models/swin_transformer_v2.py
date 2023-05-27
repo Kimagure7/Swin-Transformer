@@ -99,7 +99,7 @@ class WindowAttention(nn.Module):
         relative_coords_w = torch.arange(-(self.window_size[1] - 1), self.window_size[1], dtype=torch.float32)
         relative_coords_table = torch.stack(
             torch.meshgrid([relative_coords_h,
-                            relative_coords_w])).permute(1, 2, 0).contiguous().unsqueeze(0)  # 1, 2*Wh-1, 2*Ww-1, 2
+                            relative_coords_w]),indexing = 'ij').permute(1, 2, 0).contiguous().unsqueeze(0)  # 1, 2*Wh-1, 2*Ww-1, 2
         if pretrained_window_size[0] > 0:
             relative_coords_table[:, :, :, 0] /= (pretrained_window_size[0] - 1)
             relative_coords_table[:, :, :, 1] /= (pretrained_window_size[1] - 1)
@@ -146,7 +146,6 @@ class WindowAttention(nn.Module):
         """思路, qkv拆开算,把numberhead提出来"""
         """将qkv变成合适的形状"""
         B_, N, C = x.shape
-        x_temp = x
         qkv_bias = None
         if self.q_bias is not None:
             qkv_bias = torch.cat((self.q_bias, torch.zeros_like(self.v_bias, requires_grad=False), self.v_bias))    
@@ -154,13 +153,12 @@ class WindowAttention(nn.Module):
         relative_position_bias_table = self.cpb_mlp(self.relative_coords_table).view(-1,self.num_heads).permute(1,0).contiguous()
         # nh, (2wh-1)*(2ww-1)
         x_new = torch.zeros([self.num_heads,B_,N,C//self.num_heads]).cuda()
+        qkv = F.linear(input=x, weight=self.qkv.weight, bias=qkv_bias)
+        qkv = qkv.reshape(B_, N, 3, self.num_heads,-1).permute(2, 3, 0, 1, 4)
+        q, k, v = qkv[0], qkv[1], qkv[2]  # make torchscript happy (cannot use tensor as tuple)
         for i in range(self.num_heads):
-            qkv_index = self.gen(C // self.num_heads,i)
-            qkv = F.linear(input=x_temp, weight=self.qkv.weight[qkv_index], bias=qkv_bias[qkv_index])# nw*b,N,3*c//nh
-            qkv = qkv.reshape(B_, N, 3, -1).permute(2, 0, 1, 3)# numberhead已经不被包含
-            q, k, v = qkv[0], qkv[1], qkv[2]  # make torchscript happy (cannot use tensor as tuple)
             # cosine attention
-            attn = (F.normalize(q, dim=-1) @ F.normalize(k, dim=-1).transpose(-2, -1))
+            attn = (F.normalize(q[i], dim=-1) @ F.normalize(k[i], dim=-1).transpose(-2, -1))
             attn = attn * logit_scale[i] # nw*b, Wh*Ww, Wh*Ww
             relative_position_bias = relative_position_bias_table[i][self.relative_position_index.view(-1)].view(
                 self.window_size[0] * self.window_size[1], self.window_size[0] * self.window_size[1], -1)  # Wh*Ww,Wh*Ww,1
@@ -178,7 +176,8 @@ class WindowAttention(nn.Module):
             else:
                 attn = self.softmax(attn)
             attn = self.attn_drop(attn)
-            x_new[i] = attn @ v
+                    
+            x_new[i] = attn @ v[i]
         x_new = x_new.permute(1,2,0,3).reshape(B_, N, C)#nh,nwb,wh*ww,dim-> B_,N,C
         x_new = self.proj(x_new)
         x_new = self.proj_drop(x_new)
